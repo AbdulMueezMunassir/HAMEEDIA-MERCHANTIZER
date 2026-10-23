@@ -15,9 +15,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 $host = "localhost";
 $port = "5432";
-$dbname = "fabric_mgm";
-$user = "postgres";
-$password = "admiin123"; 
+$dbname = "";
+$user = "";
+$password = ""; 
 
 try {
     $dsn = "pgsql:host=$host;port=$port;dbname=$dbname;";
