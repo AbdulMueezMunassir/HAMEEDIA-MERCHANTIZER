@@ -1,4 +1,9 @@
 <?php
+// Prevent duplicate CORS headers if IIS web.config already adds them
+header_remove("Access-Control-Allow-Origin");
+header_remove("Access-Control-Allow-Methods");
+header_remove("Access-Control-Allow-Headers");
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
@@ -12,7 +17,7 @@ $host = "localhost";
 $port = "5432";
 $dbname = "fabric_mgm";
 $user = "postgres";
-$password = "admin123"; // Update if your PostgreSQL password differs
+$password = "admiin123"; 
 
 try {
     $dsn = "pgsql:host=$host;port=$port;dbname=$dbname;";

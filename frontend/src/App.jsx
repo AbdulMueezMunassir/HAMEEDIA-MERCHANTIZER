@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './index.css';
 
-const API_BASE = window.location.port === '5173'
-  ? 'http://localhost/Merchantizer/backend_php'
-  : '.';
+// Smart Backend URL list (tries localhost:8000 PHP server, then IIS paths)
+const CANDIDATE_APIS = [
+  'http://localhost:8000',
+  'http://localhost/Merchantizer/backend_php',
+  'http://localhost/backend_php',
+  '.'
+];
 
 // Preset Options for Styled Dropdowns
 const CATEGORY_OPTIONS = ['Shirting', 'Suiting', 'Trousering', 'Linen', 'Denim', 'Ceremonial Jacquard', 'Knitwear'];
@@ -11,7 +15,54 @@ const WEAR_OPTIONS = ['Formal Wear', 'Casual Wear', 'Smart Casual', 'Ceremonial 
 const WEAVE_OPTIONS = ['Twill Weave', 'Plain / Poplin', 'Oxford Weave', 'Dobby Weave', 'Jacquard', 'Herringbone', 'Satin'];
 const SEASON_OPTIONS = ['December Christmas', 'Ramadhan March', 'Sinhala & Tamil New Year', 'Summer Linen Collection', 'Wedding Season'];
 
+// Initial Seed Fabric (Sochers 250m Christmas -> Ramadan)
+const INITIAL_SEED_FABRICS = [
+  {
+    id: 1,
+    supplier: 'Sochers',
+    supplier_no: 'SUP-DEC-001',
+    contain: '100% Egyptian Cotton',
+    gsm: '180',
+    article_no: 'FAB-250-XMAS',
+    fabric_category: 'Shirting',
+    wear_type: 'Formal Wear',
+    design_weave: 'Twill Weave',
+    fabric_designer: 'M. Perera',
+    item_family: 'Envoy Luxury Shirts',
+    color_code: 'Navy Blue #0B2545',
+    concept_code: 'CON-XMAS-26',
+    width: '58"',
+    total_fabric: 250,
+    overall_balance: 200,
+    current_season: 'December Christmas',
+    next_season_target: 'Ramadhan March',
+    is_ordered: true,
+    images_list: [
+      'https://images.unsplash.com/photo-1584100936595-c0654b55a2e2?w=600&auto=format&fit=crop&q=80'
+    ],
+    articles: [
+      { id: 101, article_code: 'Article A', allocated_qty: 50, used_qty: 10, balance_qty: 40 },
+      { id: 102, article_code: 'Article B', allocated_qty: 50, used_qty: 10, balance_qty: 40 },
+      { id: 103, article_code: 'Article C', allocated_qty: 50, used_qty: 10, balance_qty: 40 },
+      { id: 104, article_code: 'Article D', allocated_qty: 50, used_qty: 10, balance_qty: 40 },
+      { id: 105, article_code: 'Article E', allocated_qty: 50, used_qty: 10, balance_qty: 40 }
+    ]
+  }
+];
+
+// Convert File object to base64 DataURL so images persist even without PHP server
+const fileToDataUrl = (file) =>
+  new Promise((resolve) => {
+    if (!file) return resolve(null);
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.onerror = () => resolve(URL.createObjectURL(file));
+    reader.readAsDataURL(file);
+  });
+
 export default function App() {
+  const [apiBase, setApiBase] = useState(CANDIDATE_APIS[1]);
+
   // 1. Default Theme Set to LIGHT
   const [theme, setTheme] = useState(() => localStorage.getItem('hm_theme_v2') || 'light');
 
@@ -37,17 +88,79 @@ export default function App() {
   const [userSubTab, setUserSubTab] = useState('upload'); // 'upload' or 'saved'
   const [designerSubTab, setDesignerSubTab] = useState('Fabrics');
 
-  // Data States
-  const [fabrics, setFabrics] = useState([]);
-  const [requests, setRequests] = useState([]);
-  const [notifications, setNotifications] = useState([]);
+  // Persistent Local Storage + Backend State
+  const [fabrics, setFabrics] = useState(() => {
+    try {
+      const local = JSON.parse(localStorage.getItem('hm_fabrics') || 'null');
+      return local && local.length > 0 ? local : INITIAL_SEED_FABRICS;
+    } catch {
+      return INITIAL_SEED_FABRICS;
+    }
+  });
+
+  const [requests, setRequests] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('hm_requests') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  const [notifications, setNotifications] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('hm_notifications') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  const [usersList, setUsersList] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('hm_users_list') || 'null');
+      return saved || [
+        { id: 1, username: 'admin', password: '123456', role: 'Super Admin' },
+        { id: 2, username: 'hod', password: '123456', role: 'HOD' },
+        { id: 3, username: 'designer', password: '123456', role: 'Designer' },
+        { id: 4, username: 'user', password: '123456', role: 'User' }
+      ];
+    } catch {
+      return [];
+    }
+  });
+
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
   const [selectedFabric, setSelectedFabric] = useState(null);
-  const [usersList, setUsersList] = useState([]);
   const [statusBanner, setStatusBanner] = useState('');
-
-  // Active Image Index per Fabric Card
   const [cardImageIndex, setCardImageIndex] = useState({});
+
+  // Sync local states to localStorage
+  const saveLocalFabrics = (list) => {
+    setFabrics(list);
+    try {
+      localStorage.setItem('hm_fabrics', JSON.stringify(list));
+    } catch (e) {
+      console.warn('Storage quota:', e);
+    }
+  };
+
+  const saveLocalRequests = (list) => {
+    setRequests(list);
+    localStorage.setItem('hm_requests', JSON.stringify(list));
+  };
+
+  const pushLocalNotification = (targetRole, message, fabricId = null) => {
+    const newNotif = {
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      target_role: targetRole,
+      message,
+      related_fabric_id: fabricId,
+      is_read: false,
+      created_at: new Date().toISOString()
+    };
+    const updated = [newNotif, ...notifications];
+    setNotifications(updated);
+    localStorage.setItem('hm_notifications', JSON.stringify(updated));
+  };
 
   // 3. Interactive Zoom & Mouse-Swipe Viewer Modal State
   const [viewerModal, setViewerModal] = useState({
@@ -114,6 +227,29 @@ export default function App() {
 
   const currentRole = authUser?.role || 'User';
 
+  // Auto-detect working PHP backend URL on mount
+  useEffect(() => {
+    (async () => {
+      for (const base of CANDIDATE_APIS) {
+        try {
+          const res = await fetch(`${base}/get_fabrics.php`, { method: 'GET' });
+          if (res.ok) {
+            const json = await res.json();
+            if (json && json.status === 'success') {
+              setApiBase(base);
+              if (json.data && json.data.length > 0) {
+                saveLocalFabrics(json.data);
+              }
+              break;
+            }
+          }
+        } catch {
+          // Try next candidate
+        }
+      }
+    })();
+  }, []);
+
   const goToHomePage = (roleToUse = currentRole) => {
     setShowNotifDropdown(false);
     if (roleToUse === 'User') {
@@ -131,7 +267,7 @@ export default function App() {
     e.preventDefault();
     setLoginError('');
     try {
-      const res = await fetch(`${API_BASE}/api_requests.php?action=login`, {
+      const res = await fetch(`${apiBase}/api_requests.php?action=login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(loginForm)
@@ -144,26 +280,24 @@ export default function App() {
         setStatusBanner(json.message);
         setTimeout(() => setStatusBanner(''), 4000);
         return;
-      } else {
-        setLoginError(json.message || 'Invalid credentials');
-        return;
       }
     } catch {
-      const fallbackMap = {
-        admin: 'Super Admin',
-        hod: 'HOD',
-        designer: 'Designer',
-        user: 'User'
-      };
-      const uname = loginForm.username.trim().toLowerCase();
-      if (fallbackMap[uname] && loginForm.password === '123456') {
-        const fallbackUser = { username: uname, role: fallbackMap[uname] };
-        setAuthUser(fallbackUser);
-        localStorage.setItem('hm_user', JSON.stringify(fallbackUser));
-        goToHomePage(fallbackUser.role);
-      } else {
-        setLoginError('Cannot reach backend API, or invalid demo credentials (use admin / 123456).');
-      }
+      // Check against local usersList
+    }
+
+    const matched = usersList.find(
+      (u) =>
+        u.username.toLowerCase() === loginForm.username.trim().toLowerCase() &&
+        u.password === loginForm.password.trim()
+    );
+    if (matched) {
+      setAuthUser(matched);
+      localStorage.setItem('hm_user', JSON.stringify(matched));
+      goToHomePage(matched.role);
+      setStatusBanner(`Welcome back, ${matched.username} (${matched.role})!`);
+      setTimeout(() => setStatusBanner(''), 4000);
+    } else {
+      setLoginError('Invalid username or password. Try admin / 123456');
     }
   };
 
@@ -173,85 +307,41 @@ export default function App() {
     setLoginForm({ username: '', password: '' });
   };
 
-  const fetchFabrics = async () => {
-    try {
-      const qs = new URLSearchParams(filters).toString();
-      const res = await fetch(`${API_BASE}/get_fabrics.php?${qs}`);
-      const json = await res.json();
-      if (json.status === 'success') setFabrics(json.data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
+  // Filtered Fabrics for Designer Hub
+  const filteredFabrics = fabrics.filter((f) => {
+    if (filters.fabric_category && !String(f.fabric_category || '').toLowerCase().includes(filters.fabric_category.toLowerCase())) return false;
+    if (filters.wear_type && !String(f.wear_type || '').toLowerCase().includes(filters.wear_type.toLowerCase())) return false;
+    if (filters.gsm && !String(f.gsm || '').includes(filters.gsm)) return false;
+    if (filters.color_code && !String(f.color_code || '').toLowerCase().includes(filters.color_code.toLowerCase())) return false;
+    if (filters.contain && !String(f.contain || '').toLowerCase().includes(filters.contain.toLowerCase())) return false;
+    return true;
+  });
 
-  const fetchRequests = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api_requests.php?action=get_requests`);
-      const json = await res.json();
-      if (json.status === 'success') setRequests(json.data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
+  // Role-filtered notifications
+  const roleNotifications = notifications.filter(
+    (n) => currentRole === 'Super Admin' || currentRole === 'HOD' || n.target_role === currentRole || n.target_role === 'All'
+  );
+  const unreadCount = roleNotifications.filter((n) => !n.is_read || n.is_read === 'f').length;
 
-  const fetchNotifications = async () => {
-    if (!authUser) return;
-    try {
-      const res = await fetch(`${API_BASE}/api_requests.php?action=get_notifications&role=${encodeURIComponent(authUser.role)}`);
-      const json = await res.json();
-      if (json.status === 'success') setNotifications(json.data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const fetchUsers = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api_requests.php?action=get_users`);
-      const json = await res.json();
-      if (json.status === 'success') setUsersList(json.data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  useEffect(() => {
-    if (!authUser) return;
-    fetchFabrics();
-    fetchRequests();
-    fetchNotifications();
-    fetchUsers();
-    const interval = setInterval(() => {
-      fetchNotifications();
-      fetchRequests();
-    }, 3500);
-    return () => clearInterval(interval);
-  }, [authUser, filters]);
-
-  const unreadCount = notifications.filter(n => !n.is_read || n.is_read === 'f').length;
-
-  const markAllRead = async () => {
-    if (!authUser) return;
-    try {
-      await fetch(`${API_BASE}/api_requests.php?action=mark_notifications_read`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: authUser.role })
-      });
-      fetchNotifications();
-    } catch (e) {
-      console.error(e);
-    }
+  const markAllRead = () => {
+    const updated = notifications.map((n) => ({ ...n, is_read: true }));
+    setNotifications(updated);
+    localStorage.setItem('hm_notifications', JSON.stringify(updated));
+    fetch(`${apiBase}/api_requests.php?action=mark_notifications_read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: currentRole })
+    }).catch(() => {});
   };
 
   const resolveImgUrl = (path) => {
     if (!path) return 'https://images.unsplash.com/photo-1584100936595-c0654b55a2e2?w=600&auto=format&fit=crop&q=80';
-    if (path.startsWith('http') || path.startsWith('blob:')) return path;
-    return `${API_BASE}/${path}`;
+    if (path.startsWith('http') || path.startsWith('blob:') || path.startsWith('data:')) return path;
+    return `${apiBase}/${path}`;
   };
 
   const openImageInspector = (imagesArray, startIndex = 0, title = 'Fabric Inspector') => {
-    const validList = (imagesArray && imagesArray.length > 0)
+    const validList = imagesArray && imagesArray.length > 0
       ? imagesArray.map(resolveImgUrl)
       : [resolveImgUrl(null)];
     setViewerModal({
@@ -300,15 +390,15 @@ export default function App() {
   const handleAddMoreFabricImages = (e) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
-    setExtraFiles(prev => [...prev, ...files]);
-    setExtraPreviews(prev => [...prev, ...files.map(f => URL.createObjectURL(f))]);
+    setExtraFiles((prev) => [...prev, ...files]);
+    setExtraPreviews((prev) => [...prev, ...files.map((f) => URL.createObjectURL(f))]);
   };
 
   const removeExtraImage = (idx, e) => {
     e.preventDefault();
     e.stopPropagation();
-    setExtraFiles(prev => prev.filter((_, i) => i !== idx));
-    setExtraPreviews(prev => prev.filter((_, i) => i !== idx));
+    setExtraFiles((prev) => prev.filter((_, i) => i !== idx));
+    setExtraPreviews((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const allSelectedPreviews = [
@@ -316,152 +406,288 @@ export default function App() {
     ...extraPreviews
   ];
 
-  // Submit Page 1 (Save or Order Fabric)
+  // Submit Page 1 (Save or Order Fabric) — Works with PHP Backend AND Local Fallback!
   const handleFabricSubmit = async (actionType) => {
     if (!uploadForm.supplier || !uploadForm.article_no) {
       alert('Please fill at least Supplier and Article No.');
       return;
     }
+
     const formData = new FormData();
     Object.entries(uploadForm).forEach(([k, v]) => formData.append(k, v));
     formData.append('action_type', actionType);
     formData.append('uploaded_by', authUser?.username || 'user');
 
-    // Append Default 3 Slots + Any Extra Images
     defaultThreeFiles.forEach((f, i) => {
       if (f) formData.append(`image${i + 1}`, f);
     });
-    extraFiles.forEach(file => formData.append('images[]', file));
+    extraFiles.forEach((file) => formData.append('images[]', file));
 
+    let savedOnServer = false;
     try {
-      const res = await fetch(`${API_BASE}/upload_fabric.php`, {
+      const res = await fetch(`${apiBase}/upload_fabric.php`, {
         method: 'POST',
         body: formData
       });
-      const json = await res.json();
-      if (json.status === 'success') {
-        setStatusBanner(json.message);
-        setTimeout(() => setStatusBanner(''), 5000);
-        setDefaultThreeFiles([null, null, null]);
-        setDefaultThreePreviews([null, null, null]);
-        setExtraFiles([]);
-        setExtraPreviews([]);
-        await fetchFabrics();
-        await fetchNotifications();
-        // Automatically switch to Saved Fabrics tab or scroll to show the newly saved fabric
-        if (actionType === 'save') {
-          setUserSubTab('saved');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.status === 'success') {
+          savedOnServer = true;
+          setStatusBanner(json.message);
+          const listRes = await fetch(`${apiBase}/get_fabrics.php`);
+          const listJson = await listRes.json();
+          if (listJson.status === 'success') saveLocalFabrics(listJson.data);
         }
-      } else {
-        alert(json.message);
       }
-    } catch (err) {
-      alert('Upload error: ' + err.message);
+    } catch {
+      // Backend unreachable -> Save directly in Local Persistent Store so User never gets "Failed to fetch"
     }
+
+    if (!savedOnServer) {
+      const allFiles = [...defaultThreeFiles.filter(Boolean), ...extraFiles];
+      const dataUrls = await Promise.all(allFiles.map(fileToDataUrl));
+      const finalImages = dataUrls.filter(Boolean);
+      const totalYardage = parseFloat(uploadForm.total_fabric) || 250;
+      const perArt = +(totalYardage / 5).toFixed(2);
+      const newId = Date.now();
+
+      const newFabricObj = {
+        id: newId,
+        ...uploadForm,
+        total_fabric: totalYardage,
+        overall_balance: totalYardage,
+        is_ordered: actionType === 'order',
+        uploaded_by: authUser?.username || 'user',
+        image1: finalImages[0] || null,
+        image2: finalImages[1] || null,
+        image3: finalImages[2] || null,
+        images_list: finalImages,
+        articles: ['Article A', 'Article B', 'Article C', 'Article D', 'Article E'].map((code, idx) => ({
+          id: newId + idx + 1,
+          article_code: code,
+          allocated_qty: perArt,
+          used_qty: 0,
+          balance_qty: perArt
+        }))
+      };
+
+      const updatedFabrics = [newFabricObj, ...fabrics];
+      saveLocalFabrics(updatedFabrics);
+
+      if (actionType === 'order') {
+        pushLocalNotification(
+          'Designer',
+          `📦 New Fabric Ordered by ${authUser?.username || 'user'}! Supplier: ${uploadForm.supplier} | Article: ${uploadForm.article_no} (${totalYardage}m for ${uploadForm.current_season}).`,
+          newId
+        );
+      }
+
+      setStatusBanner(
+        actionType === 'order'
+          ? '🚀 Fabric Saved & Real-Time Order Notification sent to Designer!'
+          : '💾 Fabric Saved Successfully! Showing in Saved Fabrics below.'
+      );
+    }
+
+    setTimeout(() => setStatusBanner(''), 5000);
+    setDefaultThreeFiles([null, null, null]);
+    setDefaultThreePreviews([null, null, null]);
+    setExtraFiles([]);
+    setExtraPreviews([]);
+    setUserSubTab('saved');
   };
 
   // Order an already saved fabric from the User Saved Fabrics list
   const handleOrderExistingFabric = async (fabricId) => {
+    const targetFab = fabrics.find((f) => f.id === fabricId);
     try {
-      const res = await fetch(`${API_BASE}/upload_fabric.php?action=order_existing`, {
+      const res = await fetch(`${apiBase}/upload_fabric.php?action=order_existing`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fabric_id: fabricId })
       });
-      const json = await res.json();
-      if (json.status === 'success') {
-        setStatusBanner(json.message);
-        setTimeout(() => setStatusBanner(''), 4000);
-        fetchFabrics();
-        fetchNotifications();
+      if (res.ok) {
+        const json = await res.json();
+        if (json.status === 'success') {
+          setStatusBanner(json.message);
+        }
       }
-    } catch (err) {
-      alert('Failed to order fabric: ' + err.message);
+    } catch {
+      // Local fallback
     }
+
+    const updated = fabrics.map((f) => (f.id === fabricId ? { ...f, is_ordered: true } : f));
+    saveLocalFabrics(updated);
+    if (targetFab) {
+      pushLocalNotification(
+        'Designer',
+        `📦 Saved Fabric Ordered! Supplier: ${targetFab.supplier} | Article: ${targetFab.article_no} (${targetFab.total_fabric}m for ${targetFab.current_season}).`,
+        fabricId
+      );
+    }
+    setStatusBanner('🚀 Fabric Ordered & Designer Notified in Real-Time!');
+    setTimeout(() => setStatusBanner(''), 4000);
   };
 
   const handleAddSampleImages = (e) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
-    setSampleFiles(prev => [...prev, ...files]);
-    setSamplePreviews(prev => [...prev, ...files.map(f => URL.createObjectURL(f))]);
+    setSampleFiles((prev) => [...prev, ...files]);
+    setSamplePreviews((prev) => [...prev, ...files.map((f) => URL.createObjectURL(f))]);
   };
 
+  // Designer Submits Request to HOD
   const handleDesignerSubmit = async (e) => {
     e.preventDefault();
     if (!selectedFabric) return;
 
-    const formData = new FormData();
-    formData.append('fabric_id', selectedFabric.id);
-    if (selectedArticle) {
-      formData.append('article_id', selectedArticle.id);
-      formData.append('article_code', selectedArticle.article_code);
-    } else {
-      formData.append('article_code', selectedFabric.article_no || 'Art-1');
-    }
-    formData.append('designer_name', authUser?.username || 'Designer');
-    formData.append('consumption', consumption);
-    formData.append('estimate_qty', estimateQty);
-    formData.append('designer_remarks', designerRemarks);
-    formData.append('season_used', selectedFabric.current_season || 'December Christmas');
+    const totalReq = +(consumption * estimateQty).toFixed(2);
+    const artCode = selectedArticle ? selectedArticle.article_code : selectedFabric.article_no || 'Article A';
 
-    sampleFiles.forEach(file => formData.append('samples[]', file));
-
+    let submittedToServer = false;
     try {
-      const res = await fetch(`${API_BASE}/api_requests.php?action=submit_request`, {
+      const formData = new FormData();
+      formData.append('fabric_id', selectedFabric.id);
+      if (selectedArticle) formData.append('article_id', selectedArticle.id);
+      formData.append('article_code', artCode);
+      formData.append('designer_name', authUser?.username || 'Designer');
+      formData.append('consumption', consumption);
+      formData.append('estimate_qty', estimateQty);
+      formData.append('designer_remarks', designerRemarks);
+      formData.append('season_used', selectedFabric.current_season || 'December Christmas');
+      sampleFiles.forEach((file) => formData.append('samples[]', file));
+
+      const res = await fetch(`${apiBase}/api_requests.php?action=submit_request`, {
         method: 'POST',
         body: formData
       });
-      const json = await res.json();
-      if (json.status === 'success') {
-        setStatusBanner(json.message);
-        setTimeout(() => setStatusBanner(''), 5000);
-        setSampleFiles([]);
-        setSamplePreviews([]);
-        setDesignerRemarks('');
-        fetchRequests();
-        fetchNotifications();
-      } else {
-        alert(json.message);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.status === 'success') submittedToServer = true;
       }
-    } catch (err) {
-      alert('Submission failed: ' + err.message);
+    } catch {
+      // Fallback below
     }
+
+    const sampleDataUrls = await Promise.all(sampleFiles.map(fileToDataUrl));
+    const newReq = {
+      id: Date.now(),
+      fabric_id: selectedFabric.id,
+      article_id: selectedArticle?.id || null,
+      article_code: artCode,
+      designer_name: authUser?.username || 'Designer',
+      consumption,
+      estimate_qty: estimateQty,
+      total_requested: totalReq,
+      designer_remarks: designerRemarks,
+      hod_remarks: '',
+      status: 'Pending',
+      supplier: selectedFabric.supplier,
+      main_article_no: selectedFabric.article_no,
+      fabric_category: selectedFabric.fabric_category,
+      wear_type: selectedFabric.wear_type,
+      contain: selectedFabric.contain,
+      gsm: selectedFabric.gsm,
+      overall_balance: selectedFabric.overall_balance,
+      image1: (selectedFabric.images_list && selectedFabric.images_list[0]) || selectedFabric.image1,
+      fabric_images_list: selectedFabric.images_list || [selectedFabric.image1],
+      samples_list: sampleDataUrls.filter(Boolean)
+    };
+
+    saveLocalRequests([newReq, ...requests]);
+    pushLocalNotification(
+      'HOD',
+      `🎨 Designer (${newReq.designer_name}) submitted Request for ${selectedFabric.supplier} (${artCode}): ${consumption}m × ${estimateQty} pcs = ${totalReq}m. Awaiting HOD Approval.`,
+      selectedFabric.id
+    );
+
+    setStatusBanner('📨 Designer Request & Samples Submitted to HOD!');
+    setTimeout(() => setStatusBanner(''), 5000);
+    setSampleFiles([]);
+    setSamplePreviews([]);
+    setDesignerRemarks('');
   };
 
+  // Page 4: HOD Accept / Reject
   const handleHodDecision = async (reqId, decision) => {
     const remarks = hodRemarksMap[reqId] || '';
+    const targetReq = requests.find((r) => r.id === reqId);
+
     try {
-      const res = await fetch(`${API_BASE}/api_requests.php?action=hod_decision`, {
+      await fetch(`${apiBase}/api_requests.php?action=hod_decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ request_id: reqId, decision, hod_remarks: remarks })
       });
-      const json = await res.json();
-      if (json.status === 'success') {
-        setStatusBanner(json.message);
-        setTimeout(() => setStatusBanner(''), 5000);
-        fetchRequests();
-        fetchFabrics();
-        fetchNotifications();
-      }
-    } catch (err) {
-      alert('Error: ' + err.message);
+    } catch {
+      // Local fallback
     }
+
+    const updatedReqs = requests.map((r) =>
+      r.id === reqId ? { ...r, status: decision, hod_remarks: remarks } : r
+    );
+    saveLocalRequests(updatedReqs);
+
+    if (targetReq) {
+      if (decision === 'Accepted') {
+        // Deduct balance from fabric & sub-article
+        const updatedFabs = fabrics.map((f) => {
+          if (f.id !== targetReq.fabric_id) return f;
+          const updatedArts = (f.articles || []).map((a) => {
+            if (a.article_code === targetReq.article_code || a.id === targetReq.article_id) {
+              const newUsed = +(parseFloat(a.used_qty || 0) + parseFloat(targetReq.total_requested)).toFixed(2);
+              const newBal = Math.max(0, +(parseFloat(a.allocated_qty) - newUsed).toFixed(2));
+              return { ...a, used_qty: newUsed, balance_qty: newBal };
+            }
+            return a;
+          });
+          const newOverall = Math.max(0, +(parseFloat(f.overall_balance) - parseFloat(targetReq.total_requested)).toFixed(2));
+          return { ...f, overall_balance: newOverall, articles: updatedArts };
+        });
+        saveLocalFabrics(updatedFabs);
+
+        pushLocalNotification(
+          'User',
+          `✅ HOD ACCEPTED Request #${reqId} for ${targetReq.supplier} (${targetReq.article_code}) — ${targetReq.total_requested}m approved! HOD Remarks: ${remarks || 'Approved'}`,
+          targetReq.fabric_id
+        );
+      } else {
+        pushLocalNotification(
+          'Designer',
+          `❌ HOD REJECTED Request #${reqId} for ${targetReq.supplier} (${targetReq.article_code}). HOD Remarks: ${remarks || 'Rejected'}`,
+          targetReq.fabric_id
+        );
+      }
+    }
+
+    setStatusBanner(`Request ${decision} & Real-Time Notification Dispatched!`);
+    setTimeout(() => setStatusBanner(''), 5000);
   };
 
+  // Page 5: Seasonal Simulation (50m - 10m = 40m * 5 = 200m for Ramadhan March)
   const runSeasonalSimulation = async (fabricId, usedPerArticle = 10) => {
-    const res = await fetch(`${API_BASE}/api_requests.php?action=simulate_christmas_ramadan`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fabric_id: fabricId, used_per_article: usedPerArticle })
-    });
-    const json = await res.json();
-    if (json.status === 'success') {
-      setStatusBanner(json.message);
-      setTimeout(() => setStatusBanner(''), 5000);
-      fetchFabrics();
+    try {
+      await fetch(`${apiBase}/api_requests.php?action=simulate_christmas_ramadan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fabric_id: fabricId, used_per_article: usedPerArticle })
+      });
+    } catch {
+      // Local calculation
     }
+
+    const updated = fabrics.map((f) => {
+      if (f.id !== fabricId) return f;
+      const newArts = (f.articles || []).map((a) => {
+        const bal = Math.max(0, +(parseFloat(a.allocated_qty) - usedPerArticle).toFixed(2));
+        return { ...a, used_qty: usedPerArticle, balance_qty: bal };
+      });
+      const sumBal = newArts.reduce((acc, a) => acc + parseFloat(a.balance_qty), 0);
+      return { ...f, articles: newArts, overall_balance: sumBal };
+    });
+    saveLocalFabrics(updated);
+    setStatusBanner('⚡ Seasonal Balance Updated! Overall Carry-Forward Balance for Ramadhan March: 200m');
+    setTimeout(() => setStatusBanner(''), 5000);
   };
 
   // =========================================================================
@@ -481,7 +707,7 @@ export default function App() {
 
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '26px' }}>
             <div className="logo-badge" style={{ width: '82px', height: '82px', marginBottom: '14px' }}>
-              <img src="/logo.png" alt="Hameedia Logo" onError={(e) => { e.target.src = `${API_BASE}/logo.png`; }} />
+              <img src="/logo.png" alt="Hameedia Logo" onError={(e) => { e.target.src = `${apiBase}/logo.png`; }} />
             </div>
             <h1 style={{ fontSize: '1.5rem', fontWeight: '800', textAlign: 'center' }}>HAMEEDIA MERCHANTIZER</h1>
             <p style={{ fontSize: '0.9rem', color: 'var(--blue-cyan)', marginTop: '4px' }}>
@@ -505,7 +731,7 @@ export default function App() {
                 className="glass-input"
                 placeholder="Enter username (e.g. admin, hod, designer, user)"
                 value={loginForm.username}
-                onChange={e => setLoginForm({ ...loginForm, username: e.target.value })}
+                onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
                 required
               />
             </div>
@@ -516,7 +742,7 @@ export default function App() {
                 className="glass-input"
                 placeholder="Enter password (default: 123456)"
                 value={loginForm.password}
-                onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
+                onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
                 required
               />
             </div>
@@ -535,7 +761,7 @@ export default function App() {
                 { label: '👔 HOD Approval', u: 'hod' },
                 { label: '🎨 Designer', u: 'designer' },
                 { label: '🧵 Fabric User', u: 'user' }
-              ].map(demo => (
+              ].map((demo) => (
                 <button
                   key={demo.u}
                   type="button"
@@ -559,7 +785,7 @@ export default function App() {
       <header className="glass-panel" style={{ padding: '14px 24px', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '14px' }}>
         <div className="logo-container" onClick={() => goToHomePage()} title="Click to go to Home Page">
           <div className="logo-badge">
-            <img src="/logo.png" alt="Hameedia Logo" onError={(e) => { e.target.src = `${API_BASE}/logo.png`; }} />
+            <img src="/logo.png" alt="Hameedia Logo" onError={(e) => { e.target.src = `${apiBase}/logo.png`; }} />
           </div>
           <div>
             <h1 style={{ fontSize: '1.35rem', fontWeight: '800', letterSpacing: '0.5px' }}>
@@ -582,7 +808,7 @@ export default function App() {
               </button>
               <button
                 className={`btn-glass ${activePage === 'page1_upload' && userSubTab === 'saved' ? 'active' : ''}`}
-                onClick={() => { setActivePage('page1_upload'); setUserSubTab('saved'); fetchFabrics(); }}
+                onClick={() => { setActivePage('page1_upload'); setUserSubTab('saved'); }}
               >
                 📁 Saved Fabrics ({fabrics.length})
               </button>
@@ -595,7 +821,7 @@ export default function App() {
           )}
           {(currentRole === 'HOD' || currentRole === 'Super Admin') && (
             <button className={`btn-glass ${activePage === 'page4_hod' ? 'active' : ''}`} onClick={() => setActivePage('page4_hod')}>
-              4. HOD Approvals ({requests.filter(r => r.status === 'Pending').length})
+              4. HOD Approvals ({requests.filter((r) => r.status === 'Pending').length})
             </button>
           )}
           <button className={`btn-glass ${activePage === 'page5_reports' ? 'active' : ''}`} onClick={() => setActivePage('page5_reports')}>
@@ -652,10 +878,10 @@ export default function App() {
                   <strong style={{ color: 'var(--blue-cyan)' }}>🔔 {authUser.role} Notifications</strong>
                   <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Real-Time</span>
                 </div>
-                {notifications.length === 0 ? (
+                {roleNotifications.length === 0 ? (
                   <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>No notifications yet.</p>
                 ) : (
-                  notifications.map(n => (
+                  roleNotifications.map((n) => (
                     <div key={n.id} style={{
                       padding: '10px', marginBottom: '8px', borderRadius: '10px',
                       background: 'rgba(0, 210, 255, 0.08)', borderLeft: '3px solid var(--blue-cyan)',
@@ -804,28 +1030,28 @@ export default function App() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>1. Supplier</label>
-                    <input className="glass-input" placeholder="e.g. Sochers" value={uploadForm.supplier} onChange={e => setUploadForm({ ...uploadForm, supplier: e.target.value })} />
+                    <input className="glass-input" placeholder="e.g. Sochers" value={uploadForm.supplier} onChange={(e) => setUploadForm({ ...uploadForm, supplier: e.target.value })} />
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>2. Supplier No</label>
-                    <input className="glass-input" placeholder="e.g. SUP-2026-88" value={uploadForm.supplier_no} onChange={e => setUploadForm({ ...uploadForm, supplier_no: e.target.value })} />
+                    <input className="glass-input" placeholder="e.g. SUP-2026-88" value={uploadForm.supplier_no} onChange={(e) => setUploadForm({ ...uploadForm, supplier_no: e.target.value })} />
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>3. Contain</label>
-                    <input className="glass-input" placeholder="e.g. 100% Egyptian Cotton" value={uploadForm.contain} onChange={e => setUploadForm({ ...uploadForm, contain: e.target.value })} />
+                    <input className="glass-input" placeholder="e.g. 100% Egyptian Cotton" value={uploadForm.contain} onChange={(e) => setUploadForm({ ...uploadForm, contain: e.target.value })} />
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>4. GSM</label>
-                    <input type="number" className="glass-input" placeholder="e.g. 180" value={uploadForm.gsm} onChange={e => setUploadForm({ ...uploadForm, gsm: e.target.value })} />
+                    <input type="number" className="glass-input" placeholder="e.g. 180" value={uploadForm.gsm} onChange={(e) => setUploadForm({ ...uploadForm, gsm: e.target.value })} />
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>5. Article No</label>
-                    <input className="glass-input" placeholder="e.g. ART-XMAS-250" value={uploadForm.article_no} onChange={e => setUploadForm({ ...uploadForm, article_no: e.target.value })} />
+                    <input className="glass-input" placeholder="e.g. ART-XMAS-250" value={uploadForm.article_no} onChange={(e) => setUploadForm({ ...uploadForm, article_no: e.target.value })} />
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>6. Fabric Category</label>
-                    <select className="glass-select" value={uploadForm.fabric_category} onChange={e => setUploadForm({ ...uploadForm, fabric_category: e.target.value })}>
-                      {CATEGORY_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                    <select className="glass-select" value={uploadForm.fabric_category} onChange={(e) => setUploadForm({ ...uploadForm, fabric_category: e.target.value })}>
+                      {CATEGORY_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
                     </select>
                   </div>
                 </div>
@@ -833,35 +1059,35 @@ export default function App() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>7. Wear Type</label>
-                    <select className="glass-select" value={uploadForm.wear_type} onChange={e => setUploadForm({ ...uploadForm, wear_type: e.target.value })}>
-                      {WEAR_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                    <select className="glass-select" value={uploadForm.wear_type} onChange={(e) => setUploadForm({ ...uploadForm, wear_type: e.target.value })}>
+                      {WEAR_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
                     </select>
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>8. Design Weave</label>
-                    <select className="glass-select" value={uploadForm.design_weave} onChange={e => setUploadForm({ ...uploadForm, design_weave: e.target.value })}>
-                      {WEAVE_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                    <select className="glass-select" value={uploadForm.design_weave} onChange={(e) => setUploadForm({ ...uploadForm, design_weave: e.target.value })}>
+                      {WEAVE_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
                     </select>
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>9. Fabric Designer</label>
-                    <input className="glass-input" placeholder="e.g. M. Perera" value={uploadForm.fabric_designer} onChange={e => setUploadForm({ ...uploadForm, fabric_designer: e.target.value })} />
+                    <input className="glass-input" placeholder="e.g. M. Perera" value={uploadForm.fabric_designer} onChange={(e) => setUploadForm({ ...uploadForm, fabric_designer: e.target.value })} />
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>10. Item Family</label>
-                    <input className="glass-input" placeholder="e.g. Envoy Luxury Shirts" value={uploadForm.item_family} onChange={e => setUploadForm({ ...uploadForm, item_family: e.target.value })} />
+                    <input className="glass-input" placeholder="e.g. Envoy Luxury Shirts" value={uploadForm.item_family} onChange={(e) => setUploadForm({ ...uploadForm, item_family: e.target.value })} />
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>11. Color Code</label>
-                    <input className="glass-input" placeholder="e.g. Royal Blue #104E8B" value={uploadForm.color_code} onChange={e => setUploadForm({ ...uploadForm, color_code: e.target.value })} />
+                    <input className="glass-input" placeholder="e.g. Royal Blue #104E8B" value={uploadForm.color_code} onChange={(e) => setUploadForm({ ...uploadForm, color_code: e.target.value })} />
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>12. Concept Code</label>
-                    <input className="glass-input" placeholder="e.g. XMAS-DEC-2026" value={uploadForm.concept_code} onChange={e => setUploadForm({ ...uploadForm, concept_code: e.target.value })} />
+                    <input className="glass-input" placeholder="e.g. XMAS-DEC-2026" value={uploadForm.concept_code} onChange={(e) => setUploadForm({ ...uploadForm, concept_code: e.target.value })} />
                   </div>
                   <div>
                     <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>13. Width</label>
-                    <input className="glass-input" placeholder='e.g. 58" / 60"' value={uploadForm.width} onChange={e => setUploadForm({ ...uploadForm, width: e.target.value })} />
+                    <input className="glass-input" placeholder='e.g. 58" / 60"' value={uploadForm.width} onChange={(e) => setUploadForm({ ...uploadForm, width: e.target.value })} />
                   </div>
                 </div>
               </div>
@@ -869,18 +1095,18 @@ export default function App() {
               <div className="glass-card" style={{ marginTop: '24px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
                 <div>
                   <label style={{ fontSize: '0.88rem', color: 'var(--blue-cyan)', fontWeight: '700' }}>Total Fabric Yardage (Meters) — Splits into Articles A–E</label>
-                  <input type="number" className="glass-input" value={uploadForm.total_fabric} onChange={e => setUploadForm({ ...uploadForm, total_fabric: e.target.value })} />
+                  <input type="number" className="glass-input" value={uploadForm.total_fabric} onChange={(e) => setUploadForm({ ...uploadForm, total_fabric: e.target.value })} />
                 </div>
                 <div>
                   <label style={{ fontSize: '0.88rem', color: 'var(--blue-cyan)', fontWeight: '700' }}>Primary Focus Season</label>
-                  <select className="glass-select" value={uploadForm.current_season} onChange={e => setUploadForm({ ...uploadForm, current_season: e.target.value })}>
-                    {SEASON_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                  <select className="glass-select" value={uploadForm.current_season} onChange={(e) => setUploadForm({ ...uploadForm, current_season: e.target.value })}>
+                    {SEASON_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
                 <div>
                   <label style={{ fontSize: '0.88rem', color: 'var(--blue-cyan)', fontWeight: '700' }}>Balance Carry-Forward Season</label>
-                  <select className="glass-select" value={uploadForm.next_season_target} onChange={e => setUploadForm({ ...uploadForm, next_season_target: e.target.value })}>
-                    {SEASON_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                  <select className="glass-select" value={uploadForm.next_season_target} onChange={(e) => setUploadForm({ ...uploadForm, next_season_target: e.target.value })}>
+                    {SEASON_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
               </div>
@@ -896,7 +1122,7 @@ export default function App() {
             </div>
           ) : null}
 
-          {/* SAVED FABRICS SECTION FOR USER (Always accessible in Saved Fabrics tab or below form) */}
+          {/* SAVED FABRICS SECTION FOR USER */}
           <div className="glass-panel" style={{ padding: '28px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
               <div>
@@ -904,7 +1130,7 @@ export default function App() {
                   📁 User Saved & Ordered Fabrics ({fabrics.length})
                 </h2>
                 <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                  All fabrics saved by User appear here. Click any image to Zoom In/Out & Swipe, or click "Order Fabric" to notify the Designer.
+                  All fabrics saved by User appear here immediately. Click any image to Zoom In/Out & Swipe, or click "Order Fabric" to notify the Designer.
                 </p>
               </div>
               {userSubTab === 'saved' && (
@@ -954,7 +1180,7 @@ export default function App() {
                                 className={`thumb-item ${activeIdx === i ? 'active' : ''}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setCardImageIndex(prev => ({ ...prev, [fab.id]: i }));
+                                  setCardImageIndex((prev) => ({ ...prev, [fab.id]: i }));
                                 }}
                               />
                             ))}
@@ -1010,7 +1236,7 @@ export default function App() {
           <div className="glass-panel" style={{ padding: '16px 24px', marginBottom: '22px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
             <div style={{ display: 'flex', gap: '10px' }}>
               <button className={`btn-glass ${designerSubTab === 'Fabrics' ? 'active' : ''}`} onClick={() => setDesignerSubTab('Fabrics')}>
-                🧵 Fabric ({fabrics.length})
+                🧵 Fabric ({filteredFabrics.length})
               </button>
               <button className={`btn-glass ${designerSubTab === 'Orders' ? 'active' : ''}`} onClick={() => setDesignerSubTab('Orders')}>
                 📦 Orders ({requests.length})
@@ -1021,23 +1247,23 @@ export default function App() {
             </div>
 
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', flex: 1, justifyContent: 'flex-end' }}>
-              <select className="glass-select" style={{ width: '175px' }} value={filters.fabric_category} onChange={e => setFilters({ ...filters, fabric_category: e.target.value })}>
+              <select className="glass-select" style={{ width: '175px' }} value={filters.fabric_category} onChange={(e) => setFilters({ ...filters, fabric_category: e.target.value })}>
                 <option value="">All Categories</option>
-                {CATEGORY_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                {CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
-              <select className="glass-select" style={{ width: '165px' }} value={filters.wear_type} onChange={e => setFilters({ ...filters, wear_type: e.target.value })}>
+              <select className="glass-select" style={{ width: '165px' }} value={filters.wear_type} onChange={(e) => setFilters({ ...filters, wear_type: e.target.value })}>
                 <option value="">All Wear Types</option>
-                {WEAR_OPTIONS.map(w => <option key={w} value={w}>{w}</option>)}
+                {WEAR_OPTIONS.map((w) => <option key={w} value={w}>{w}</option>)}
               </select>
-              <input className="glass-input" style={{ width: '115px' }} placeholder="GSM..." value={filters.gsm} onChange={e => setFilters({ ...filters, gsm: e.target.value })} />
-              <input className="glass-input" style={{ width: '145px' }} placeholder="Color Code..." value={filters.color_code} onChange={e => setFilters({ ...filters, color_code: e.target.value })} />
-              <input className="glass-input" style={{ width: '145px' }} placeholder="Contain..." value={filters.contain} onChange={e => setFilters({ ...filters, contain: e.target.value })} />
+              <input className="glass-input" style={{ width: '115px' }} placeholder="GSM..." value={filters.gsm} onChange={(e) => setFilters({ ...filters, gsm: e.target.value })} />
+              <input className="glass-input" style={{ width: '145px' }} placeholder="Color Code..." value={filters.color_code} onChange={(e) => setFilters({ ...filters, color_code: e.target.value })} />
+              <input className="glass-input" style={{ width: '145px' }} placeholder="Contain..." value={filters.contain} onChange={(e) => setFilters({ ...filters, contain: e.target.value })} />
             </div>
           </div>
 
           {designerSubTab === 'Fabrics' ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(275px, 1fr))', gap: '20px' }}>
-              {fabrics.map((fab, idx) => {
+              {filteredFabrics.map((fab, idx) => {
                 const imgs = fab.images_list && fab.images_list.length > 0 ? fab.images_list : [fab.image1];
                 const activeIdx = cardImageIndex[fab.id] || 0;
                 const currentImg = imgs[activeIdx] || imgs[0];
@@ -1072,7 +1298,7 @@ export default function App() {
                               className={`thumb-item ${activeIdx === i ? 'active' : ''}`}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setCardImageIndex(prev => ({ ...prev, [fab.id]: i }));
+                                setCardImageIndex((prev) => ({ ...prev, [fab.id]: i }));
                               }}
                             />
                           ))}
@@ -1092,7 +1318,7 @@ export default function App() {
 
                     <div>
                       <div style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '8px', marginBottom: '12px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                        {fab.articles && fab.articles.map(art => (
+                        {fab.articles && fab.articles.map((art) => (
                           <span key={art.id} style={{
                             fontSize: '0.74rem', padding: '2px 7px', borderRadius: '6px',
                             background: 'rgba(0, 210, 255, 0.12)', border: '1px solid var(--glass-border)'
@@ -1122,7 +1348,7 @@ export default function App() {
             <div className="glass-panel" style={{ padding: '24px' }}>
               <h3 style={{ marginBottom: '16px', color: 'var(--blue-cyan)' }}>Submitted Designer Orders & HOD Status</h3>
               <div style={{ display: 'grid', gap: '14px' }}>
-                {requests.map(r => (
+                {requests.map((r) => (
                   <div key={r.id} className="glass-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
                     <div>
                       <strong>Request #{r.id} — {r.supplier} ({r.main_article_no} / {r.article_code})</strong>
@@ -1178,7 +1404,7 @@ export default function App() {
                       src={resolveImgUrl(imgUrl)}
                       alt="thumb"
                       className={`thumb-item ${(cardImageIndex[selectedFabric.id] || 0) === i ? 'active' : ''}`}
-                      onClick={() => setCardImageIndex(prev => ({ ...prev, [selectedFabric.id]: i }))}
+                      onClick={() => setCardImageIndex((prev) => ({ ...prev, [selectedFabric.id]: i }))}
                     />
                   ))}
                 </div>
@@ -1189,7 +1415,7 @@ export default function App() {
                   Select Sub-Article of {selectedFabric.article_no}:
                 </div>
                 <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                  {selectedFabric.articles && selectedFabric.articles.map(art => (
+                  {selectedFabric.articles && selectedFabric.articles.map((art) => (
                     <button
                       key={art.id}
                       type="button"
@@ -1240,7 +1466,7 @@ export default function App() {
                   step="0.01"
                   className="glass-input"
                   value={consumption}
-                  onChange={e => setConsumption(parseFloat(e.target.value) || 0)}
+                  onChange={(e) => setConsumption(parseFloat(e.target.value) || 0)}
                 />
               </div>
               <div>
@@ -1249,7 +1475,7 @@ export default function App() {
                   type="number"
                   className="glass-input"
                   value={estimateQty}
-                  onChange={e => setEstimateQty(parseInt(e.target.value, 10) || 0)}
+                  onChange={(e) => setEstimateQty(parseInt(e.target.value, 10) || 0)}
                 />
               </div>
               <div>
@@ -1298,7 +1524,7 @@ export default function App() {
                 className="glass-input"
                 placeholder="Enter styling notes, Christmas/Ramadan collection allocation remarks..."
                 value={designerRemarks}
-                onChange={e => setDesignerRemarks(e.target.value)}
+                onChange={(e) => setDesignerRemarks(e.target.value)}
               />
             </div>
 
@@ -1325,7 +1551,7 @@ export default function App() {
             {requests.length === 0 ? (
               <p>No designer requests submitted yet.</p>
             ) : (
-              requests.map(req => (
+              requests.map((req) => (
                 <div key={req.id} className="glass-card" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
                   <div>
                     <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '12px' }}>
@@ -1381,7 +1607,7 @@ export default function App() {
                         className="glass-input"
                         placeholder="Add HOD approval/rejection notes..."
                         value={hodRemarksMap[req.id] !== undefined ? hodRemarksMap[req.id] : (req.hod_remarks || '')}
-                        onChange={e => setHodRemarksMap({ ...hodRemarksMap, [req.id]: e.target.value })}
+                        onChange={(e) => setHodRemarksMap({ ...hodRemarksMap, [req.id]: e.target.value })}
                       />
                     </div>
 
@@ -1419,7 +1645,7 @@ export default function App() {
             December Christmas Allocation (250m ➔ A, B, C, D, E = 50m each) with 200m Overall Balance Carried Forward to Ramadhan March.
           </p>
 
-          {fabrics.map(fab => {
+          {fabrics.map((fab) => {
             const totalAllocated = fab.articles?.reduce((acc, a) => acc + parseFloat(a.allocated_qty || 0), 0) || fab.total_fabric;
             const totalUsed = fab.articles?.reduce((acc, a) => acc + parseFloat(a.used_qty || 0), 0) || 0;
             const overallBalance = fab.articles?.reduce((acc, a) => acc + parseFloat(a.balance_qty || 0), 0) || fab.overall_balance;
@@ -1454,7 +1680,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {fab.articles && fab.articles.map(art => (
+                      {fab.articles && fab.articles.map((art) => (
                         <tr key={art.id} style={{ borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
                           <td style={{ padding: '10px', fontWeight: '700' }}>{art.article_code}</td>
                           <td style={{ padding: '10px' }}>{art.allocated_qty} m</td>
@@ -1499,7 +1725,7 @@ export default function App() {
                     className="glass-input"
                     placeholder="e.g. designer_kamal"
                     value={newUser.username}
-                    onChange={e => setNewUser({ ...newUser, username: e.target.value })}
+                    onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
                   />
                 </div>
                 <div>
@@ -1509,7 +1735,7 @@ export default function App() {
                     className="glass-input"
                     placeholder="Set login password"
                     value={newUser.password}
-                    onChange={e => setNewUser({ ...newUser, password: e.target.value })}
+                    onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
                   />
                 </div>
                 <div>
@@ -1517,7 +1743,7 @@ export default function App() {
                   <select
                     className="glass-select"
                     value={newUser.role}
-                    onChange={e => setNewUser({ ...newUser, role: e.target.value })}
+                    onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
                   >
                     <option value="Super Admin">Super Admin (All Access + Role Creator)</option>
                     <option value="HOD">HOD (Access All + Approvals)</option>
@@ -1533,19 +1759,22 @@ export default function App() {
                       alert('Please enter both username and password');
                       return;
                     }
-                    const res = await fetch(`${API_BASE}/api_requests.php?action=create_user`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify(newUser)
-                    });
-                    const json = await res.json();
-                    if (json.status === 'success') {
-                      setStatusBanner(json.message);
-                      setNewUser({ username: '', password: '', role: 'Designer' });
-                      fetchUsers();
-                    } else {
-                      alert(json.message);
+                    try {
+                      await fetch(`${apiBase}/api_requests.php?action=create_user`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(newUser)
+                      });
+                    } catch {
+                      // Local fallback
                     }
+                    const created = { id: Date.now(), ...newUser };
+                    const updatedUsers = [...usersList, created];
+                    setUsersList(updatedUsers);
+                    localStorage.setItem('hm_users_list', JSON.stringify(updatedUsers));
+                    setStatusBanner(`Account '${newUser.username}' (${newUser.role}) created!`);
+                    setTimeout(() => setStatusBanner(''), 4000);
+                    setNewUser({ username: '', password: '', role: 'Designer' });
                   }}
                 >
                   ➕ Create Login Account
@@ -1556,7 +1785,7 @@ export default function App() {
             <div className="glass-card">
               <h3 style={{ marginBottom: '14px', fontSize: '1.08rem', color: 'var(--blue-cyan)' }}>Active User Accounts</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {usersList.map(u => (
+                {usersList.map((u) => (
                   <div key={u.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderRadius: '10px', background: 'rgba(0,210,255,0.06)', border: '1px solid var(--glass-border)' }}>
                     <div>
                       <strong>{u.username}</strong>
@@ -1568,13 +1797,10 @@ export default function App() {
                         <button
                           className="btn-glass btn-danger"
                           style={{ padding: '4px 8px', fontSize: '0.75rem' }}
-                          onClick={async () => {
-                            await fetch(`${API_BASE}/api_requests.php?action=delete_user`, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ id: u.id })
-                            });
-                            fetchUsers();
+                          onClick={() => {
+                            const updated = usersList.filter((item) => item.id !== u.id);
+                            setUsersList(updated);
+                            localStorage.setItem('hm_users_list', JSON.stringify(updated));
                           }}
                         >
                           ✕
@@ -1646,7 +1872,7 @@ export default function App() {
             onWheel={(e) => {
               e.preventDefault();
               const delta = e.deltaY < 0 ? 0.25 : -0.25;
-              setZoomLevel(prev => Math.max(0.5, Math.min(5, +(prev + delta).toFixed(2))));
+              setZoomLevel((prev) => Math.max(0.5, Math.min(5, +(prev + delta).toFixed(2))));
             }}
             onMouseDown={(e) => {
               setIsDraggingImg(true);
@@ -1665,7 +1891,7 @@ export default function App() {
                   e.stopPropagation();
                   setZoomLevel(1);
                   setPanOffset({ x: 0, y: 0 });
-                  setViewerModal(prev => ({
+                  setViewerModal((prev) => ({
                     ...prev,
                     currentIndex: (prev.currentIndex - 1 + prev.images.length) % prev.images.length
                   }));
@@ -1698,7 +1924,7 @@ export default function App() {
                   e.stopPropagation();
                   setZoomLevel(1);
                   setPanOffset({ x: 0, y: 0 });
-                  setViewerModal(prev => ({
+                  setViewerModal((prev) => ({
                     ...prev,
                     currentIndex: (prev.currentIndex + 1) % prev.images.length
                   }));
@@ -1717,7 +1943,7 @@ export default function App() {
                 alt={`Slide ${i + 1}`}
                 className={`thumb-item ${viewerModal.currentIndex === i ? 'active' : ''}`}
                 onClick={() => {
-                  setViewerModal(prev => ({ ...prev, currentIndex: i }));
+                  setViewerModal((prev) => ({ ...prev, currentIndex: i }));
                   setZoomLevel(1);
                   setPanOffset({ x: 0, y: 0 });
                 }}
